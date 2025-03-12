@@ -6,6 +6,7 @@ import math
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
+from typing import Optional
 from datasets import load_from_disk
 from sklearn.model_selection import train_test_split
 
@@ -27,8 +28,6 @@ parser.add_argument("--num_random_z", default=3)
 parser.add_argument("--llm", default="llama70b-nemo")
 parser.add_argument("--run_name", default="fewshot")
 parser.add_argument("--save_directory", default="other")
-parser.add_argument("--specify_dataset_type", default=0)
-parser.add_argument("--predict_probabilities", default=0)
 args = parser.parse_args()
 seed = int(args.seed)
 np.random.seed(seed)
@@ -40,8 +39,6 @@ num_modified_z = int(args.num_modified_z)
 num_random_z = int(args.num_random_z)
 run_name = args.run_name
 save_directory = args.save_directory
-specify_dataset_type = int(args.specify_dataset_type)
-predict_probabilities = int(args.predict_probabilities)
 pd.set_option('display.max_columns', None)
 
 ################################################################################################
@@ -73,54 +70,38 @@ def get_response(prompt, label_keys, seed):
 ########################################## Prompts #############################################
 ################################################################################################
 
-if specify_dataset_type == 0:
-    dataset_specification_string = "dataset"
-elif specify_dataset_type == 1:
-    dataset_specification_string = "LOGISTIC_REGRESSION dataset"
-
-def prompt_start():
-    prompt = f"""Here are some samples from a {dataset_specification_string}:"""
-    
-    return prompt
-
-def prompt_middle(label_name, label_keys):
-    if predict_probabilities == 0:
-        prompt = f"""Given the dataset samples, predict "{label_name}" from the following:"""
-    elif predict_probabilities == 1:
-        prompt = f"""Given the dataset samples, predict the probability of {label_name} = {label_keys[0]} from the following:"""
-    else:
-        raise ValueError("predict_probabilities can only be 0 or 1.")
-    return prompt
-
-def prompt_end(label_name, label_keys):
-    if predict_probabilities == 0:
-        prompt =  f""""{label_name}" takes the form of the following: {label_keys[0]} or {label_keys[1]}.
-
-Please output **ONLY** your predicted {label_name} label key from {label_keys} and enclose your output in <output> </output> tags. ** DO NOT OUTPUT ANYTHING ELSE! **
-"""
-    elif predict_probabilities == 1:
-        prompt =  f""""{label_name}" can take the values: {label_keys[0]} or {label_keys[1]}.
-
-Please output **ONLY** your predicted probability of {label_name} = {label_keys[0]} and enclose your output in <output> </output> tags. ** DO NOT OUTPUT ANYTHING ELSE! **
-"""
-    else:
-        raise ValueError("predict_probabilities can only be 0 or 1.")
-    return prompt
-
-def full_prompt(incontext_examples: list[str], example: str, label_name: str = "y", label_keys: list[str] = ["0", "1"]):
+def short_prompt(incontext_examples: list[str], example: str, *args, **kwargs):
     incontext_examples_str = "\n".join(incontext_examples)
     
-    prompt = f"""{prompt_start()}
-
-{incontext_examples_str}
-
-{prompt_middle(label_name, label_keys)}
-
-{example}
-
-{prompt_end(label_name, label_keys)}"""
-
+    prompt = f"""{incontext_examples_str}\n {example} <output>"""
+    
     return prompt
+
+def note_label_prompt(note: str, label: str):
+    prompt = f""" {note} <output>{label}</output>"""
+    
+    return prompt
+
+def note_label_df_to_icl_examples(note_label_df: pd.DataFrame, seed: int, z_note: Optional[str] = None, u_label: Optional[str|int] = None):
+    """
+    Converts a DataFrame of notes and labels to incontext examples for LLM. Shuffles the DataFrame before converting.
+    
+    If z_note and u_label are provided, the z_note and u_label will be added to data as well.
+    """
+    
+    if z_note is not None and u_label is not None:
+        z_note_label_df = pd.DataFrame([{"note": z_note, "label": u_label}])
+        note_label_df = pd.concat([note_label_df, z_note_label_df], ignore_index=True)
+        
+    note_label_df = note_label_df.sample(frac=1, random_state=seed).reset_index(drop=True)
+    
+    incontext_examples = []
+    
+    for _, row in note_label_df.iterrows():
+        incontext_examples.append(note_label_prompt(row['note'], row['label']))
+    
+    return incontext_examples
+
 
 ################################################################################################
 ########################################## Prompts #############################################
@@ -160,9 +141,9 @@ else:
     
 D_rows = data.sample(n=shots, random_state=seed)
 
-D = "\n".join(
-    [f"- {row['note']} -> {label_name}: {row['label']}" for _, row in D_rows.iterrows()]
-)
+D_note_label_df = D_rows[['note', 'label']]
+
+D = "\n".join(f" {row['note']} <output>{row['label']}</output>" for _, row in D_rows.iterrows())
 
 D_rows.to_csv(f"results/{save_directory}/D_{run_name}_{args.data}.csv", index=False)
 
@@ -186,6 +167,7 @@ D_selected_values = D_rows[selected_feature].values
 decimal_places = 1
 previous_z_values = []
 z_entropy_list = []
+
 # Take new z values by sampling a normal distribution with mean from z and std from D values
 
 num_random_z = int(num_random_z)
@@ -241,8 +223,8 @@ for i in range(num_modified_z):
         
         ## p(u|z)
         print(f"\np(u|z) Seed {seed + 1}/{seed_num}")
-
-        prompt_puz = full_prompt([D], z)
+        
+        prompt_puz = short_prompt(note_label_df_to_icl_examples(D_note_label_df, seed), z)
         
         print("Prompt for p(u|z):")
         print(prompt_puz)
@@ -286,9 +268,6 @@ for j in range(num_x_values):
         z = row['note']
         z_y = row['label']
         # print("Row Note:", z)
-        
-        # Initialize avg_puzx_probs
-        avg_puzx_probs = {label: 0.0 for label in label_keys}
 
         # Initialize avg_pyxu_z_probs with distinct keys for each label
         avg_pyxu_z_probs = {
@@ -304,43 +283,11 @@ for j in range(num_x_values):
         
         # ----- Processing p(u|z) and p(u|z,x) -----
         for seed in range(seed_num):
-            # ## p(u|z)
-            # print(f"\np(u|z) Seed {seed + 1}/{seed_num}")
-
-            # prompt_puz = full_prompt([D], z)
-            
-            # print("Prompt for p(u|z):")
-            # print(prompt_puz)
-
-            # # Get the prediction and probabilities from the model
-            # pred_puz, probs_puz = get_response(prompt_puz, label_keys, seed=seed)
-            # # print("pred_p(u|z):", pred_puz)
-            # # print("probs_p(u|z):", probs_puz)
-            
-            # # Accumulate probabilities for puz
-            # for label, prob in probs_puz.items():
-            #     avg_puz_probs[label] += prob
-            
-            ## p(u|z,x)
-            print(f"\np(u|z,x) Seed {seed + 1}/{seed_num}")
-
-            prompt_puzx = full_prompt([D, f"- {x}"], z)
-            
-            print("Prompt for p(u|z,x):")
-            print(prompt_puzx)
-            # Get the prediction and probabilities from the model
-            pred_puzx, probs_puzx = get_response(prompt_puzx, label_keys, seed=seed)
-            # print("pred_p(u|z,x):", pred_puzx)
-            # print("probs_p(u|z,x):", probs_puzx)
-
-            # Accumulate probabilities for puz
-            for label, prob in probs_puzx.items():
-                avg_puzx_probs[label] += prob
-            
+        
             ## p(y|x)
             print(f"\np(y|x) Seed {seed + 1}/{seed_num}")
 
-            prompt_pyx = full_prompt([D], x)
+            prompt_pyx = short_prompt(note_label_df_to_icl_examples(D_note_label_df, seed), x)
             
             print("Prompt for p(y|x,D):")
             print(prompt_pyx)
@@ -357,10 +304,7 @@ for j in range(num_x_values):
         # # Calculate the average probabilities for puz and puzx
         # avg_puz_probs = {label: prob / seed_num for label, prob in avg_puz_probs.items()}
         # # print("\nAveraged puz probabilities:", avg_puz_probs)
-        
-        avg_puzx_probs = {label: prob / seed_num for label, prob in avg_puzx_probs.items()}
-        # print("\nAveraged puzx probabilities:", avg_puzx_probs)
-        
+                
         avg_pyx_probs = {label: prob / seed_num for label, prob in avg_pyx_probs.items()}
         # print("\nAveraged puzx probabilities:", avg_pyx_probs)
 
@@ -368,8 +312,7 @@ for j in range(num_x_values):
         for outer_label in label_keys:
             print(f"\nProcessing p(y|x,u=_,z) for label '{outer_label}'")
 
-            prompt_pyxuz = full_prompt([f"- {z} -> {label_name}: {outer_label}", D], x)
-
+            prompt_pyxuz = short_prompt(note_label_df_to_icl_examples(D_note_label_df, seed, z, outer_label), x)
             print("Prompt for p(y|x,u=_,z):")
             print(prompt_pyxuz)
 
@@ -408,10 +351,6 @@ for j in range(num_x_values):
         # # Add averaged puz probabilities to the DataFrame
         # for label, avg_prob in avg_puz_probs.items():
         #     z_data.at[i, f"p(u={label}|z)"] = avg_prob
-            
-        # Add averaged puzx probabilities to the DataFrame
-        for label, avg_prob in avg_puzx_probs.items():
-            z_data.at[i, f"p(u={label}|z,x)"] = avg_prob
 
         # Add averaged pyxu_z probabilities to the DataFrame
         for key, sub_dict in avg_pyxu_z_probs.items():
@@ -442,9 +381,9 @@ for j in range(num_x_values):
         
         expected_H = 0.0
         for label in label_keys:
-            avg_puzx_prob = z_data.at[i, f"p(u={label}|z,x)"]
+            avg_puz_prob = z_data.at[i, f"p(u={label}|z)"]
             avg_pyxuz_entropy = z_data.at[i, f"H[p(y|x,u={label},z)]"]
-            expected_H += avg_puzx_prob * avg_pyxuz_entropy
+            expected_H += avg_puz_prob * avg_pyxuz_entropy
         z_data.at[i, "Va = E[H[p(y|x,u,z)]]"] = round(expected_H, 5)
                 
         # ----- Final Output -----
@@ -457,7 +396,7 @@ for j in range(num_x_values):
         
     total_U = z_data["H[p(y|x)]"][0]
     print("\nTotal Uncertainty =", total_U)
-    maximum_entropic_distance = total_U/2
+    maximum_entropic_distance = total_U/20
     print("\nMaximum Entropic Distance =", maximum_entropic_distance)
     # Find the valid z values
     valid_Va = []
