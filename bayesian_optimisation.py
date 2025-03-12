@@ -6,7 +6,7 @@ from gpytorch.mlls import ExactMarginalLogLikelihood
 from botorch.acquisition import LogExpectedImprovement
 from botorch.optim import optimize_acqf
 
-def new_candidate(z_values: list[float], entropy_values: list[float]):
+def new_candidate(z_values: list[float], maximisation_quantity: list[float], lower_bound: float, upper_bound: float) -> float:
     """
     Given the current z values and their corresponding entropy values,
     this function returns the new candidate z value to evaluate next.
@@ -20,7 +20,7 @@ def new_candidate(z_values: list[float], entropy_values: list[float]):
     """
     # Create the training data
     train_X = torch.tensor(z_values, dtype=torch.float64).unsqueeze(-1)
-    train_Y = torch.tensor(entropy_values, dtype=torch.float64).unsqueeze(-1)
+    train_Y = torch.tensor(maximisation_quantity, dtype=torch.float64).unsqueeze(-1)
     
     # Create the model
     gp = SingleTaskGP(
@@ -40,7 +40,7 @@ def new_candidate(z_values: list[float], entropy_values: list[float]):
     # Optimize the acquisition function
     candidate, acq_value = optimize_acqf(
         acq_function=EI,
-        bounds=torch.tensor([[-10.0], [10.0]]),
+        bounds=torch.tensor([[lower_bound], [upper_bound]]),
         q=1,
         num_restarts=5,
         raw_samples=20,
