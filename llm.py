@@ -9,6 +9,7 @@ from huggingface_hub import login
 
 parser = argparse.ArgumentParser(description='Description of your program')
 parser.add_argument("--llm", default="llama70b-nemo")
+parser.add_argument("--port", default=5000)
 args = parser.parse_args()
 
 # Initialize the Flask app
@@ -30,6 +31,8 @@ elif args.llm == "qwen14b":
     model_id = "Qwen/Qwen2.5-14B-Instruct"
 elif args.llm == "qwen32b":
     model_id = "Qwen/Qwen2.5-32B-Instruct"
+elif args.llm == "qwen14b-base":
+    model_id = "Qwen/Qwen2.5-14B"
 # Load the model and tokenizer
 
 tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -48,7 +51,7 @@ def get_response(llm, prompt, label_keys, seed):
     
     tokenizer, model = llm["tokenizer"], llm["model"]
     input_ids = tokenizer(prompt, return_tensors="pt").to("cuda")
-    outputs = model.generate(**input_ids, max_new_tokens=2048, pad_token_id=tokenizer.eos_token_id,
+    outputs = model.generate(**input_ids, max_new_tokens=10, pad_token_id=tokenizer.eos_token_id,
                              output_scores=True, return_dict_in_generate=True, do_sample = True, temperature = 0.5)
     # outputs = model.generate(**input_ids, max_new_tokens=2048, pad_token_id=tokenizer.eos_token_id,
                             #  output_scores=True, return_dict_in_generate=True, do_sample = True, top_p=0.9, top_k = 50)
@@ -138,4 +141,4 @@ def predict():
     return jsonify({'response_text': response_text, 'probabilities': probabilities})
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=int(args.port))
