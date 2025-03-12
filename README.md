@@ -3,7 +3,7 @@
 
 ```conda activate vpud```
 
-```pip install torch accelerate transformers pandas matplotlib datasets scikit-learn flask ipykernel```
+```pip install torch accelerate transformers pandas matplotlib datasets scikit-learn flask ipykernel seaborn```
 
 Before running ```llm.py```, please fill in your huggingface login token in ```llm.py```. 
 
